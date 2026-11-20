@@ -1,6 +1,6 @@
 [package]
 name = "datakeel"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Blazing-fast, agent-first (DX + AX) Rust data contract, schema drift, and codegen CLI with native ODCS v3 support."
