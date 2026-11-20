@@ -45,6 +45,7 @@ pub enum DataFormatArg {
     Csv,
     Tsv,
     Parquet,
+    Postgres,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -55,12 +56,12 @@ pub enum CodegenTarget {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Infer a data contract (ODCS v3 YAML or datakeel.toml) from a JSON, JSONL, CSV, or Parquet dataset
+    /// Infer a data contract (ODCS v3 YAML or datakeel.toml) from JSON, JSONL, CSV, Parquet, or a live Postgres table
     Infer {
-        /// Path to input dataset (or '-' for stdin)
+        /// Path to input dataset, '-' for stdin, 'pg://[schema.]table' (uses DATABASE_URL), or 'postgres://...'
         input: String,
 
-        /// Explicit input data format (default: auto-detect from extension)
+        /// Explicit input data format (default: auto-detect from extension or URI scheme)
         #[arg(long = "input-format", value_enum, default_value_t = DataFormatArg::Auto)]
         input_format: DataFormatArg,
 
@@ -68,11 +69,23 @@ pub enum Commands {
         #[arg(long)]
         json_path: Option<String>,
 
+        /// Postgres table name (`table` or `schema.table`) when passing a `postgres://` URI
+        #[arg(long)]
+        table: Option<String>,
+
+        /// Optional SQL WHERE predicate when reading from Postgres (e.g. "status = 'active'")
+        #[arg(long = "where")]
+        where_clause: Option<String>,
+
+        /// Maximum number of rows to fetch when reading from Postgres
+        #[arg(long)]
+        limit: Option<usize>,
+
         /// Contract format to emit: odcs (ODCS v3.2.0 YAML) or toml (compact datakeel.toml)
         #[arg(long = "contract-format", value_enum, default_value_t = ContractFormatArg::Odcs)]
         contract_format: ContractFormatArg,
 
-        /// Dataset / table name to record in the contract (defaults to file stem)
+        /// Dataset / table name to record in the contract (defaults to file stem or Postgres table)
         #[arg(long)]
         name: Option<String>,
 
@@ -85,15 +98,15 @@ pub enum Commands {
         output: Option<PathBuf>,
     },
 
-    /// Validate a dataset against an ODCS v3 YAML or datakeel.toml contract
+    /// Validate a dataset (file or live Postgres table) against an ODCS v3 YAML or datakeel.toml contract
     Check {
         /// Path to contract file (.yaml, .yml, or .toml)
         contract: PathBuf,
 
-        /// Path to dataset to validate (or '-' for stdin)
+        /// Dataset path, '-' for stdin, 'pg://[schema.]table' (uses DATABASE_URL), or 'postgres://...'
         data: String,
 
-        /// Explicit input data format (default: auto-detect from extension)
+        /// Explicit input data format (default: auto-detect from extension or URI scheme)
         #[arg(long = "input-format", value_enum, default_value_t = DataFormatArg::Auto)]
         input_format: DataFormatArg,
 
@@ -101,8 +114,20 @@ pub enum Commands {
         #[arg(long)]
         json_path: Option<String>,
 
-        /// Cross-source reference datasets for foreign-key checks: NAME=PATH (repeatable)
-        #[arg(long = "ref", value_name = "NAME=PATH")]
+        /// Postgres table name (`table` or `schema.table`) when passing a `postgres://` URI
+        #[arg(long)]
+        table: Option<String>,
+
+        /// Optional SQL WHERE predicate when reading from Postgres (e.g. "ingested_at >= now() - interval '1 day'")
+        #[arg(long = "where")]
+        where_clause: Option<String>,
+
+        /// Maximum number of rows to fetch when reading from Postgres
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Cross-source reference datasets for foreign-key checks: NAME=PATH_OR_PG_URI (repeatable)
+        #[arg(long = "ref", value_name = "NAME=SOURCE")]
         refs: Vec<String>,
 
         /// Fail on unexpected columns not declared in the contract (overrides contract setting)
@@ -114,25 +139,33 @@ pub enum Commands {
         max_samples: usize,
     },
 
-    /// Detect schema drift, breaking type shifts, null-rate spikes, and row-count drops
+    /// Detect schema drift, breaking type shifts, null-rate spikes, and row-count drops (files, contracts, or live Postgres tables)
     Diff {
-        /// Baseline snapshot (data file or contract file)
-        baseline: PathBuf,
+        /// Baseline snapshot (data file, contract file, 'pg://[schema.]table', or 'postgres://...')
+        baseline: String,
 
-        /// Current snapshot (data file or contract file)
-        current: PathBuf,
+        /// Current snapshot (data file, contract file, 'pg://[schema.]table', or 'postgres://...')
+        current: String,
 
-        /// Explicit format for baseline if data file
+        /// Explicit format for baseline if data source
         #[arg(long = "baseline-format", value_enum, default_value_t = DataFormatArg::Auto)]
         baseline_format: DataFormatArg,
 
-        /// Explicit format for current if data file
+        /// Explicit format for current if data source
         #[arg(long = "current-format", value_enum, default_value_t = DataFormatArg::Auto)]
         current_format: DataFormatArg,
 
         /// Dot-separated JSON path for JSON envelopes
         #[arg(long)]
         json_path: Option<String>,
+
+        /// Optional SQL WHERE predicate applied to Postgres sources
+        #[arg(long = "where")]
+        where_clause: Option<String>,
+
+        /// Maximum number of rows to fetch when reading from Postgres
+        #[arg(long)]
+        limit: Option<usize>,
 
         /// Maximum allowed increase in column null rate before flagging breaking drift (0.0 - 1.0)
         #[arg(long, default_value_t = 0.05)]

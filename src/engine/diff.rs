@@ -1,6 +1,6 @@
 use crate::cli::DataFormatArg;
 use crate::contract::{Contract, LogicalType};
-use crate::data::load_dataset;
+use crate::data::{LoadOptions, load_dataset, postgres_reader};
 use crate::engine::infer::profile_dataset;
 use crate::error::Result;
 use indexmap::IndexMap;
@@ -12,6 +12,8 @@ pub struct DiffOptions {
     pub baseline_format: DataFormatArg,
     pub current_format: DataFormatArg,
     pub json_path: Option<String>,
+    pub where_clause: Option<String>,
+    pub limit: Option<usize>,
     pub max_null_delta: f64,
     pub max_row_drop_pct: f64,
     pub fail_on_any: bool,
@@ -53,6 +55,7 @@ pub struct DiffReport {
 }
 
 struct SnapshotProfile {
+    display_name: String,
     row_count: Option<usize>,
     columns: IndexMap<String, ColumnSnapshot>,
 }
@@ -64,12 +67,16 @@ struct ColumnSnapshot {
 }
 
 fn load_snapshot(
-    path: &Path,
+    source: &str,
     explicit_fmt: DataFormatArg,
-    json_path: Option<&str>,
+    load_opts: &LoadOptions,
 ) -> Result<SnapshotProfile> {
-    if explicit_fmt == DataFormatArg::Auto && Contract::is_contract_path(path) {
-        let contract = Contract::load_from_path(path)?;
+    let as_path = Path::new(source);
+    if explicit_fmt == DataFormatArg::Auto
+        && !postgres_reader::is_postgres_uri(source)
+        && Contract::is_contract_path(as_path)
+    {
+        let contract = Contract::load_from_path(as_path)?;
         let mut columns = IndexMap::new();
         for (name, col) in contract.columns {
             columns.insert(
@@ -86,11 +93,12 @@ fn load_snapshot(
             );
         }
         Ok(SnapshotProfile {
+            display_name: source.to_string(),
             row_count: None,
             columns,
         })
     } else {
-        let ds = load_dataset(&path.display().to_string(), explicit_fmt, json_path)?;
+        let ds = load_dataset(source, explicit_fmt, load_opts)?;
         let stats = profile_dataset(&ds, 0);
         let mut columns = IndexMap::new();
         for (name, st) in stats {
@@ -103,16 +111,24 @@ fn load_snapshot(
                 },
             );
         }
+        let row_count = ds.row_count();
         Ok(SnapshotProfile {
-            row_count: Some(ds.row_count()),
+            display_name: ds.source_name,
+            row_count: Some(row_count),
             columns,
         })
     }
 }
 
-pub fn diff_sources(baseline: &Path, current: &Path, options: DiffOptions) -> Result<DiffReport> {
-    let base = load_snapshot(baseline, options.baseline_format, options.json_path.as_deref())?;
-    let curr = load_snapshot(current, options.current_format, options.json_path.as_deref())?;
+pub fn diff_sources(baseline: &str, current: &str, options: DiffOptions) -> Result<DiffReport> {
+    let load_opts = LoadOptions {
+        json_path: options.json_path.clone(),
+        table: None,
+        where_clause: options.where_clause.clone(),
+        limit: options.limit,
+    };
+    let base = load_snapshot(baseline, options.baseline_format, &load_opts)?;
+    let curr = load_snapshot(current, options.current_format, &load_opts)?;
 
     let mut changes = Vec::new();
 
@@ -263,8 +279,8 @@ pub fn diff_sources(baseline: &Path, current: &Path, options: DiffOptions) -> Re
         schema_version: "1.0",
         command: "diff",
         failed,
-        baseline_path: baseline.display().to_string(),
-        current_path: current.display().to_string(),
+        baseline_path: base.display_name,
+        current_path: curr.display_name,
         baseline_rows: base.row_count,
         current_rows: curr.row_count,
         breaking_count,

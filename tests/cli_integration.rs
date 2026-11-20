@@ -390,3 +390,109 @@ fn skill_prints_and_installs_and_errors_return_exit_2() {
     assert_eq!(env["ok"], false);
     assert_eq!(env["error"]["code"], "DK_IO_READ");
 }
+
+#[test]
+fn postgres_uri_errors_are_structured_and_redact_passwords() {
+    // 1. pg:// shorthand without DATABASE_URL -> DK_PG_MISSING_DATABASE_URL
+    let stderr = datakeel()
+        .env_remove("DATABASE_URL")
+        .env_remove("DATAKEEL_DATABASE_URL")
+        .args(["infer", "pg://staging.populi_students", "--format", "agent"])
+        .assert()
+        .code(2)
+        .get_output()
+        .stderr
+        .clone();
+    let env: Value = serde_json::from_slice(&stderr).expect("valid JSON error envelope");
+    assert_eq!(env["ok"], false);
+    assert_eq!(env["error"]["code"], "DK_PG_MISSING_DATABASE_URL");
+
+    // 2. postgres:// without table -> DK_PG_MISSING_TABLE and password MUST be redacted
+    let stderr = datakeel()
+        .args([
+            "infer",
+            "postgres://alice:top_secret_pw@localhost:5432/seminary",
+            "--format",
+            "agent",
+        ])
+        .assert()
+        .code(2)
+        .get_output()
+        .stderr
+        .clone();
+    let raw = String::from_utf8_lossy(&stderr);
+    assert!(
+        !raw.contains("top_secret_pw"),
+        "password must never appear in stderr: {raw}"
+    );
+    let env: Value = serde_json::from_slice(&stderr).expect("valid JSON error envelope");
+    assert_eq!(env["error"]["code"], "DK_PG_MISSING_TABLE");
+}
+
+#[test]
+fn live_postgres_end_to_end_when_configured() {
+    let Ok(pg_url) = std::env::var("DATAKEEL_TEST_PG_URL") else {
+        return;
+    };
+    let dir = tempdir().unwrap();
+    let contract_path = dir.path().join("pg_students.yaml");
+
+    // 1. Infer ODCS v3 contract straight from live Postgres table
+    datakeel()
+        .env("DATABASE_URL", &pg_url)
+        .args([
+            "infer",
+            "pg://staging.populi_students",
+            "--infer-enums",
+            "10",
+            "-o",
+            contract_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // 2. Validate live Postgres table against the inferred contract
+    datakeel()
+        .env("DATABASE_URL", &pg_url)
+        .args([
+            "check",
+            contract_path.to_str().unwrap(),
+            "pg://staging.populi_students",
+            "--format",
+            "agent",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"ok\":true"));
+
+    // 3. Cross-source check: local Canvas JSONL against LIVE Postgres populi_students!
+    datakeel()
+        .env("DATABASE_URL", &pg_url)
+        .args([
+            "check",
+            example("canvas_enrollments.toml").to_str().unwrap(),
+            example("canvas_enrollments_bad.jsonl").to_str().unwrap(),
+            "--ref",
+            "populi_students=pg://staging.populi_students",
+            "--format",
+            "agent",
+        ])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("DK_ORPHAN_REFERENCE"));
+
+    // 4. Diff live Postgres table against drifted local JSONL extract!
+    datakeel()
+        .env("DATABASE_URL", &pg_url)
+        .args([
+            "diff",
+            "pg://staging.populi_students",
+            example("populi_students_today_drift.jsonl").to_str().unwrap(),
+            "--format",
+            "agent",
+        ])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("DK_DRIFT_COLUMN_DROPPED"))
+        .stdout(predicate::str::contains("DK_DRIFT_NULL_SPIKE"));
+}

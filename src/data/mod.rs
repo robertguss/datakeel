@@ -1,6 +1,7 @@
 pub mod csv_reader;
 pub mod json;
 pub mod parquet_reader;
+pub mod postgres_reader;
 
 use crate::cli::DataFormatArg;
 use crate::contract::LogicalType;
@@ -12,6 +13,14 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
+
+#[derive(Debug, Clone, Default)]
+pub struct LoadOptions {
+    pub json_path: Option<String>,
+    pub table: Option<String>,
+    pub where_clause: Option<String>,
+    pub limit: Option<usize>,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
@@ -149,6 +158,9 @@ pub fn detect_data_format(input: &str, explicit: DataFormatArg) -> Result<DataFo
     if explicit != DataFormatArg::Auto {
         return Ok(explicit);
     }
+    if postgres_reader::is_postgres_uri(input) {
+        return Ok(DataFormatArg::Postgres);
+    }
     if input == "-" {
         return Ok(DataFormatArg::Jsonl);
     }
@@ -173,9 +185,13 @@ pub fn detect_data_format(input: &str, explicit: DataFormatArg) -> Result<DataFo
 pub fn load_dataset(
     input: &str,
     explicit_format: DataFormatArg,
-    json_path: Option<&str>,
+    opts: &LoadOptions,
 ) -> Result<Dataset> {
     let fmt = detect_data_format(input, explicit_format)?;
+
+    if fmt == DataFormatArg::Postgres {
+        return postgres_reader::read_postgres(input, opts);
+    }
 
     if fmt == DataFormatArg::Parquet {
         if input == "-" {
@@ -204,10 +220,10 @@ pub fn load_dataset(
     };
 
     match fmt {
-        DataFormatArg::Json => json::read_json(&raw_bytes, input, json_path),
+        DataFormatArg::Json => json::read_json(&raw_bytes, input, opts.json_path.as_deref()),
         DataFormatArg::Jsonl => json::read_jsonl(&raw_bytes, input),
         DataFormatArg::Csv => csv_reader::read_csv(&raw_bytes, input, b','),
         DataFormatArg::Tsv => csv_reader::read_csv(&raw_bytes, input, b'\t'),
-        DataFormatArg::Parquet | DataFormatArg::Auto => unreachable!(),
+        DataFormatArg::Parquet | DataFormatArg::Postgres | DataFormatArg::Auto => unreachable!(),
     }
 }

@@ -1,7 +1,7 @@
 use clap::Parser;
-use datakeel::cli::{Cli, Commands, ContractFormatArg, OutputFormatArg};
+use datakeel::cli::{Cli, Commands, ContractFormatArg, DataFormatArg, OutputFormatArg};
 use datakeel::contract::{Contract, ContractFormat};
-use datakeel::data::load_dataset;
+use datakeel::data::{LoadOptions, load_dataset, postgres_reader};
 use datakeel::engine::{check, codegen, diff, infer, lint};
 use datakeel::error::{EXIT_ERROR, EXIT_OK, EXIT_VIOLATION, KeelError, Result};
 use datakeel::output::{self, ResolvedFormat};
@@ -31,13 +31,22 @@ fn run(cli: Cli, format: ResolvedFormat, use_color: bool) -> Result<i32> {
             input,
             input_format,
             json_path,
+            table,
+            where_clause,
+            limit,
             contract_format,
             name,
             infer_enums,
             output: out_path,
         } => {
-            let dataset = load_dataset(&input, input_format, json_path.as_deref())?;
-            let table_name = name.unwrap_or_else(|| derive_table_name(&input));
+            let load_opts = LoadOptions {
+                json_path,
+                table: table.clone(),
+                where_clause,
+                limit,
+            };
+            let dataset = load_dataset(&input, input_format, &load_opts)?;
+            let table_name = name.unwrap_or_else(|| derive_table_name(&input, table.as_deref()));
             let contract = infer::infer_contract(
                 &dataset,
                 &table_name,
@@ -78,23 +87,32 @@ fn run(cli: Cli, format: ResolvedFormat, use_color: bool) -> Result<i32> {
             data,
             input_format,
             json_path,
+            table,
+            where_clause,
+            limit,
             refs,
             strict,
             max_samples,
         } => {
             let contract = Contract::load_from_path(&contract_path)?;
-            let dataset = load_dataset(&data, input_format, json_path.as_deref())?;
+            let load_opts = LoadOptions {
+                json_path,
+                table,
+                where_clause,
+                limit,
+            };
+            let dataset = load_dataset(&data, input_format, &load_opts)?;
 
             let mut ref_datasets = HashMap::new();
             for raw in refs {
-                let (ref_name, ref_path) =
+                let (ref_name, ref_source) =
                     raw.split_once('=').ok_or_else(|| KeelError::InvalidRefArg {
                         raw: raw.clone(),
                     })?;
-                if ref_name.trim().is_empty() || ref_path.trim().is_empty() {
+                if ref_name.trim().is_empty() || ref_source.trim().is_empty() {
                     return Err(KeelError::InvalidRefArg { raw });
                 }
-                let ref_ds = load_dataset(ref_path, datakeel::cli::DataFormatArg::Auto, None)?;
+                let ref_ds = load_dataset(ref_source, DataFormatArg::Auto, &LoadOptions::default())?;
                 ref_datasets.insert(ref_name.trim().to_string(), ref_ds);
             }
 
@@ -105,7 +123,7 @@ fn run(cli: Cli, format: ResolvedFormat, use_color: bool) -> Result<i32> {
                     strict_override: strict,
                     max_samples,
                     contract_path: contract_path.display().to_string(),
-                    data_path: data,
+                    data_path: dataset.source_name.clone(),
                 },
                 &ref_datasets,
             )?;
@@ -124,6 +142,8 @@ fn run(cli: Cli, format: ResolvedFormat, use_color: bool) -> Result<i32> {
             baseline_format,
             current_format,
             json_path,
+            where_clause,
+            limit,
             max_null_delta,
             max_row_drop_pct,
             fail_on_any,
@@ -135,6 +155,8 @@ fn run(cli: Cli, format: ResolvedFormat, use_color: bool) -> Result<i32> {
                     baseline_format,
                     current_format,
                     json_path,
+                    where_clause,
+                    limit,
                     max_null_delta,
                     max_row_drop_pct,
                     fail_on_any,
@@ -201,7 +223,10 @@ fn run(cli: Cli, format: ResolvedFormat, use_color: bool) -> Result<i32> {
     }
 }
 
-fn derive_table_name(input: &str) -> String {
+fn derive_table_name(input: &str, explicit_table: Option<&str>) -> String {
+    if let Some(pg_table) = postgres_reader::extract_table_name_hint(input, explicit_table) {
+        return sanitize_ident(&pg_table);
+    }
     if input == "-" {
         return "stdin_dataset".to_string();
     }
@@ -210,7 +235,11 @@ fn derive_table_name(input: &str) -> String {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("dataset");
-    let clean: String = stem
+    sanitize_ident(stem)
+}
+
+fn sanitize_ident(raw: &str) -> String {
+    let clean: String = raw
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' {

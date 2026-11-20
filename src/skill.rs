@@ -11,28 +11,30 @@ description: Validate, infer, diff, and generate Postgres DDL / Pydantic v2 mode
 
 ## Identity & Scope
 
-`datakeel` is a single-binary Rust CLI for **data contracts, schema drift detection, cross-source referential integrity, and Postgres/Pydantic codegen**. It natively supports **Open Data Contract Standard (ODCS v3.2.0) YAML** (`*.yaml` / `*.yml`) and compact **DataKeel TOML** (`*.toml`), and reads **JSON, JSONL/NDJSON, CSV, TSV, and Parquet**.
+`datakeel` is a single-binary Rust CLI for **data contracts, schema drift detection, cross-source referential integrity, and Postgres/Pydantic codegen**. It natively supports **Open Data Contract Standard (ODCS v3.2.0) YAML** (`*.yaml` / `*.yml`) and compact **DataKeel TOML** (`*.toml`), and reads **JSON, JSONL/NDJSON, CSV, TSV, Parquet, and live PostgreSQL tables** (`pg://[schema.]table` or `postgres://...`).
 
 ## Output & Exit Code Contract
 
 - **TTY-aware dual mode:** Automatically outputs compact single-line JSON (`--format agent`) when piped/non-TTY and human-readable output in an interactive terminal. You can also pass `--format agent` or `--format json` explicitly.
 - **Strict stream separation:** `stdout` contains ONLY data payloads or generated contracts/code. `stderr` receives runtime/config errors (`ErrorEnvelope` JSON when non-TTY).
-- **Zero interactivity:** Never prompts for input.
+- **Zero interactivity & secret hygiene:** Never prompts for input. Prefer `pg://schema.table` with `DATABASE_URL` (or `DATAKEEL_DATABASE_URL`) in the environment instead of embedding passwords on the command line; `datakeel` redacts URI passwords in all reports and errors.
 - **Exit codes:**
   - `0` — Clean pass / no breaking drift / contract valid
   - `1` — Data contract violation, breaking drift, or invalid contract lint
-  - `2` — CLI usage, IO, or parse error (check `stderr` JSON `error.code` and `error.fix_hint`)
+  - `2` — CLI usage, IO, Postgres connection/query, or parse error (check `stderr` JSON `error.code` and `error.fix_hint`)
 
 ## Core Command Matrix
 
 | Goal | Command |
 | :--- | :--- |
 | Infer ODCS v3 contract from raw API dump | `datakeel infer extract.jsonl -o contracts/table.yaml` |
+| Infer contract directly from live Postgres | `datakeel infer pg://staging.populi_students --limit 10000 -o contracts/populi_students.yaml` |
 | Infer compact TOML contract with enums | `datakeel infer extract.csv --contract-format toml --infer-enums 10 -o contracts/table.toml` |
 | Infer from nested JSON API envelope | `datakeel infer response.json --json-path data.records -o contracts/table.yaml` |
 | Validate data against a contract | `datakeel check contracts/table.yaml extract.jsonl --format agent` |
-| Validate with cross-source foreign key | `datakeel check contracts/enrollments.toml enrollments.jsonl --ref students=students.jsonl --format agent` |
-| Detect schema/null/row drift vs yesterday | `datakeel diff yesterday.jsonl today.jsonl --format agent` |
+| Validate a live Postgres table slice | `datakeel check contracts/table.yaml pg://staging.populi_students --where "status = 'active'" --format agent` |
+| Validate local extract vs live Postgres FK | `datakeel check contracts/enrollments.toml enrollments.jsonl --ref populi_students=pg://staging.populi_students --format agent` |
+| Detect drift vs live Postgres before load | `datakeel diff pg://staging.populi_students today_populi.jsonl --format agent` |
 | Generate Postgres DDL from contract | `datakeel codegen contracts/table.yaml --target postgres --schema staging` |
 | Generate Python Pydantic v2 model | `datakeel codegen contracts/table.yaml --target pydantic` |
 | Lint a contract file before committing | `datakeel lint contracts/table.yaml --format agent` |

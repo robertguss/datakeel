@@ -7,7 +7,7 @@
 ## Why `datakeel`?
 
 - **Open-standard + ergonomic:** Reads and writes **ODCS v3.2.0 YAML** (`datacontract.yaml`) natively *and* compact **`datakeel.toml`** files through one unified Rust model.
-- **Zero-bloat multi-format engine:** Profiles and validates **JSON**, **JSONL / NDJSON**, **CSV / TSV**, and **Parquet** natively (plus `stdin`).
+- **Zero-bloat multi-format + live Postgres engine:** Profiles and validates **JSON**, **JSONL / NDJSON**, **CSV / TSV**, **Parquet**, `stdin`, and **live PostgreSQL tables** (`pg://staging.populi_students` via `DATABASE_URL` or full `postgres://...` URIs with TLS support & automatic password redaction).
 - **Cross-source referential integrity:** Catch orphan IDs across API extracts (e.g. Canvas `sis_user_id` → Populi `student_id`) *before* a SQL `INNER JOIN` silently drops records.
 - **Schema & distribution drift detection:** Type-widening compatibility lattice, null-rate spike alerts, and row-count drop guards (catches truncated API pagination!).
 - **Single source of truth codegen:** Generate **PostgreSQL `CREATE TABLE` DDL** and **Python Pydantic v2 models** directly from your contract so humans and agents never drift on column names or types.
@@ -40,7 +40,13 @@ datakeel diff \
 datakeel codegen examples/seminary-etl/populi_students.datacontract.yaml --target postgres --schema staging
 datakeel codegen examples/seminary-etl/populi_students.datacontract.yaml --target pydantic
 
-# 5. Install the built-in AI Agent Skill into your repository
+# 5. Work directly against live PostgreSQL (uses DATABASE_URL or DATAKEEL_DATABASE_URL)
+export DATABASE_URL="postgres://user:pass@localhost:5432/seminary"
+datakeel infer pg://staging.populi_students --limit 5000 -o populi_students.datacontract.yaml
+datakeel check contracts/canvas_enrollments.toml canvas_today.jsonl --ref populi_students=pg://staging.populi_students
+datakeel diff pg://staging.populi_students populi_today.jsonl
+
+# 6. Install the built-in AI Agent Skill into your repository
 datakeel skill --install .agents/skills/datakeel
 ```
 

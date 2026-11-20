@@ -70,7 +70,7 @@ pub fn read_jsonl(bytes: &[u8], source_name: &str) -> Result<Dataset> {
     Ok(Dataset::from_rows(source_name.to_string(), rows))
 }
 
-fn json_object_to_row(val: &JsonValue, source_name: &str, row_num: usize) -> Result<Row> {
+pub(crate) fn json_object_to_row(val: &JsonValue, source_name: &str, row_num: usize) -> Result<Row> {
     let map = val.as_object().ok_or_else(|| KeelError::DataParse {
         path: source_name.to_string(),
         detail: format!("record {row_num} must be a JSON object"),
