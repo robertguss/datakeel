@@ -1,0 +1,67 @@
+apiVersion: v3.2.0
+kind: DataContract
+id: urn:datakeel:populi_students
+name: populi_students
+version: 1.0.0
+status: active
+description:
+  purpose: Canonical student roster extracted from Populi SIS for retention risk analytics.
+schema:
+  - name: populi_students
+    physicalName: populi_students
+    properties:
+      - name: student_id
+        logicalType: string
+        physicalType: text
+        required: true
+        unique: true
+        primaryKey: true
+        description: Populi SIS student identifier
+        logicalTypeOptions:
+          pattern: "^STU-[0-9]{4,}$"
+      - name: email
+        logicalType: string
+        physicalType: text
+        required: true
+        unique: true
+        logicalTypeOptions:
+          pattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+      - name: program
+        logicalType: string
+        physicalType: text
+        required: true
+        logicalTypeOptions:
+          enum: ["MDiv", "MAR", "MABC", "ThM", "PhD"]
+      - name: status
+        logicalType: string
+        physicalType: text
+        required: true
+        logicalTypeOptions:
+          enum: ["active", "probation", "leave", "withdrawn", "graduated"]
+      - name: gpa
+        logicalType: number
+        physicalType: double precision
+        logicalTypeOptions:
+          minimum: 0.0
+          maximum: 4.0
+        customProperties:
+          - property: maxNullRate
+            value: 0.05
+      - name: credits_completed
+        logicalType: integer
+        physicalType: integer
+        required: true
+        logicalTypeOptions:
+          minimum: 0
+      - name: enrolled_on
+        logicalType: date
+        physicalType: date
+        required: true
+      - name: advisor_email
+        logicalType: string
+        physicalType: text
+        required: false
+    quality:
+      - type: library
+        metric: rowCount
+        mustBeGreaterThanOrEqualTo: 1

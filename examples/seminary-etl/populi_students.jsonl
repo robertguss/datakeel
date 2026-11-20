@@ -1,0 +1,5 @@
+{"student_id":"STU-1001","email":"abigail.mercer@example.edu","program":"MDiv","status":"active","gpa":3.82,"credits_completed":42,"enrolled_on":"2024-08-26","advisor_email":"dr.calvin@example.edu"}
+{"student_id":"STU-1002","email":"caleb.wright@example.edu","program":"MAR","status":"active","gpa":3.15,"credits_completed":24,"enrolled_on":"2025-01-13","advisor_email":"dr.owen@example.edu"}
+{"student_id":"STU-1003","email":"hannah.park@example.edu","program":"MDiv","status":"probation","gpa":2.08,"credits_completed":18,"enrolled_on":"2025-08-25","advisor_email":"dr.calvin@example.edu"}
+{"student_id":"STU-1004","email":"nathan.brooks@example.edu","program":"ThM","status":"active","gpa":3.94,"credits_completed":12,"enrolled_on":"2025-08-25","advisor_email":"dr.bavinck@example.edu"}
+{"student_id":"STU-1005","email":"lydia.chen@example.edu","program":"MABC","status":"leave","gpa":2.74,"credits_completed":30,"enrolled_on":"2024-08-26","advisor_email":"dr.owen@example.edu"}

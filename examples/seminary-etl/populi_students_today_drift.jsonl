@@ -1,0 +1,3 @@
+{"student_id":"STU-1001","email":"abigail.mercer@example.edu","program":"MDiv","status":"active","gpa":null,"credits_completed":42,"enrolled_on":"2024-08-26","cohort_tag":"fall-2024"}
+{"student_id":"STU-1002","email":"caleb.wright@example.edu","program":"MAR","status":"active","gpa":null,"credits_completed":24,"enrolled_on":"2025-01-13","cohort_tag":"spring-2025"}
+{"student_id":"STU-1003","email":"hannah.park@example.edu","program":"MDiv","status":"probation","gpa":2.08,"credits_completed":18,"enrolled_on":"2025-08-25","cohort_tag":"fall-2025"}

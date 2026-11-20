@@ -1,0 +1,36 @@
+[contract]
+name = "canvas_enrollments"
+version = "1.0.0"
+description = "Canvas LMS course enrollment & engagement metrics joined to Populi SIS."
+strict = true
+min_rows = 1
+
+[columns.enrollment_id]
+type = "string"
+required = true
+primary_key = true
+pattern = "^ENR-[0-9]+$"
+
+[columns.sis_user_id]
+type = "string"
+required = true
+references = "populi_students.student_id"
+description = "Populi student_id mapped via Canvas sis_user_id"
+
+[columns.course_id]
+type = "string"
+required = true
+
+[columns.current_score]
+type = "number"
+min = 0.0
+max = 100.0
+max_null_rate = 0.2
+
+[columns.missing_assignments]
+type = "integer"
+required = true
+min = 0
+
+[columns.last_activity_at]
+type = "timestamp"
