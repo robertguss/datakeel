@@ -496,3 +496,125 @@ fn live_postgres_end_to_end_when_configured() {
         .stdout(predicate::str::contains("DK_DRIFT_COLUMN_DROPPED"))
         .stdout(predicate::str::contains("DK_DRIFT_NULL_SPIKE"));
 }
+
+#[test]
+fn quarantine_splits_clean_and_bad_rows_and_enforces_budget() {
+    let dir = tempdir().unwrap();
+    let clean_path = dir.path().join("clean.jsonl");
+    let quarantine_path = dir.path().join("quarantine.jsonl");
+
+    // 1. Strict default (no --max-quarantine-rate): writes clean & quarantine files, exits 1
+    let out = datakeel()
+        .args([
+            "check",
+            example("canvas_enrollments.toml").to_str().unwrap(),
+            example("canvas_enrollments_bad.jsonl").to_str().unwrap(),
+            "--ref",
+            &format!(
+                "populi_students={}",
+                example("populi_students.jsonl").display()
+            ),
+            "--clean",
+            clean_path.to_str().unwrap(),
+            "--quarantine",
+            quarantine_path.to_str().unwrap(),
+            "--format",
+            "agent",
+        ])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+
+    let report: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["quarantine"]["clean_rows"], 1);
+    assert_eq!(report["quarantine"]["quarantined_rows"], 2);
+
+    let clean_lines: Vec<String> = fs::read_to_string(&clean_path)
+        .unwrap()
+        .lines()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(clean_lines.len(), 1);
+    let clean_row: Value = serde_json::from_str(&clean_lines[0]).unwrap();
+    assert_eq!(clean_row["enrollment_id"], "ENR-9001");
+
+    let q_lines: Vec<String> = fs::read_to_string(&quarantine_path)
+        .unwrap()
+        .lines()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(q_lines.len(), 2);
+    let q0: Value = serde_json::from_str(&q_lines[0]).unwrap();
+    assert_eq!(q0["row"], 2);
+    assert_eq!(q0["record"]["enrollment_id"], "ENR-9002");
+    let q0_codes: Vec<&str> = q0["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["code"].as_str().unwrap())
+        .collect();
+    assert!(q0_codes.contains(&"DK_RANGE_VIOLATION"));
+    assert!(q0_codes.contains(&"DK_ORPHAN_REFERENCE"));
+
+    // 2. Budget within threshold (2/3 = 66.7% <= 0.70) -> exit 0!
+    let clean_path2 = dir.path().join("clean2.jsonl");
+    let out_ok = datakeel()
+        .args([
+            "check",
+            example("canvas_enrollments.toml").to_str().unwrap(),
+            example("canvas_enrollments_bad.jsonl").to_str().unwrap(),
+            "--ref",
+            &format!(
+                "populi_students={}",
+                example("populi_students.jsonl").display()
+            ),
+            "--clean",
+            clean_path2.to_str().unwrap(),
+            "--max-quarantine-rate",
+            "0.70",
+            "--format",
+            "agent",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let rep_ok: Value = serde_json::from_slice(&out_ok).unwrap();
+    assert_eq!(rep_ok["ok"], true);
+    assert_eq!(rep_ok["quarantine"]["within_budget"], true);
+
+    // 3. Budget exceeded (2/3 = 66.7% > 0.10) -> exit 1 with DK_QUARANTINE_RATE_EXCEEDED
+    let out_fail = datakeel()
+        .args([
+            "check",
+            example("canvas_enrollments.toml").to_str().unwrap(),
+            example("canvas_enrollments_bad.jsonl").to_str().unwrap(),
+            "--ref",
+            &format!(
+                "populi_students={}",
+                example("populi_students.jsonl").display()
+            ),
+            "--max-quarantine-rate",
+            "0.10",
+            "--format",
+            "agent",
+        ])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    let rep_fail: Value = serde_json::from_slice(&out_fail).unwrap();
+    assert_eq!(rep_fail["ok"], false);
+    let codes: Vec<&str> = rep_fail["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["code"].as_str().unwrap())
+        .collect();
+    assert!(codes.contains(&"DK_QUARANTINE_RATE_EXCEEDED"));
+}

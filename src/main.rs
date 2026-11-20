@@ -93,6 +93,9 @@ fn run(cli: Cli, format: ResolvedFormat, use_color: bool) -> Result<i32> {
             refs,
             strict,
             max_samples,
+            clean,
+            quarantine,
+            max_quarantine_rate,
         } => {
             let contract = Contract::load_from_path(&contract_path)?;
             let load_opts = LoadOptions {
@@ -124,6 +127,9 @@ fn run(cli: Cli, format: ResolvedFormat, use_color: bool) -> Result<i32> {
                     max_samples,
                     contract_path: contract_path.display().to_string(),
                     data_path: dataset.source_name.clone(),
+                    clean_path: clean,
+                    quarantine_path: quarantine,
+                    max_quarantine_rate,
                 },
                 &ref_datasets,
             )?;

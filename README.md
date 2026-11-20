@@ -10,12 +10,24 @@
 - **Zero-bloat multi-format + live Postgres engine:** Profiles and validates **JSON**, **JSONL / NDJSON**, **CSV / TSV**, **Parquet**, `stdin`, and **live PostgreSQL tables** (`pg://staging.populi_students` via `DATABASE_URL` or full `postgres://...` URIs with TLS support & automatic password redaction).
 - **Cross-source referential integrity:** Catch orphan IDs across API extracts (e.g. Canvas `sis_user_id` → Populi `student_id`) *before* a SQL `INNER JOIN` silently drops records.
 - **Schema & distribution drift detection:** Type-widening compatibility lattice, null-rate spike alerts, and row-count drop guards (catches truncated API pagination!).
+- **Quarantine / split mode (`--clean` & `--quarantine`):** Route clean rows to your Postgres loader while writing rejected rows (annotated with exact `DK_*` error codes) to a quarantine JSONL file, with optional `--max-quarantine-rate` thresholds so isolated bad records never halt a nightly pipeline.
 - **Single source of truth codegen:** Generate **PostgreSQL `CREATE TABLE` DDL** and **Python Pydantic v2 models** directly from your contract so humans and agents never drift on column names or types.
 - **First-class AX (Agent Experience):**
   - **TTY-aware dual mode:** Colorized human output in a terminal; compact single-line JSON (`--format agent`) automatically when piped.
   - **Strict `stdout` / `stderr` separation:** `stdout` is pure data/code; `stderr` holds structured JSON error envelopes.
   - **Token-budgeted diagnostics:** Violations are deduplicated by rule + column, capped at 3 sample rows (`--max-samples`), and paired with stable `DK_*` codes and `fix_hint`s.
   - **Bundled `SKILL.md`:** Run `datakeel skill --install .agents/skills/datakeel` so any coding agent immediately knows every command, exit code, and workflow.
+
+## Installation
+
+```bash
+# Rust / Cargo
+cargo install --git https://github.com/robertguss/datakeel
+
+# Python / uv (zero Rust toolchain required once published to PyPI)
+uvx datakeel --help
+uv tool install datakeel
+```
 
 ## Quickstart
 
@@ -25,11 +37,13 @@ datakeel infer examples/seminary-etl/populi_students.jsonl \
   --infer-enums 10 \
   -o populi_students.datacontract.yaml
 
-# 2. Validate with cross-source foreign-key integrity
+# 2. Validate with cross-source foreign-key integrity & quarantine split
 datakeel check \
   examples/seminary-etl/canvas_enrollments.toml \
   examples/seminary-etl/canvas_enrollments_bad.jsonl \
-  --ref populi_students=examples/seminary-etl/populi_students.jsonl
+  --ref populi_students=examples/seminary-etl/populi_students.jsonl \
+  --clean /tmp/canvas_clean.jsonl \
+  --quarantine /tmp/canvas_quarantine.jsonl
 
 # 3. Catch API schema drift, null spikes, and pagination drops between runs
 datakeel diff \

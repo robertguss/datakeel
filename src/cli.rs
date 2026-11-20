@@ -137,6 +137,18 @@ pub enum Commands {
         /// Maximum sample rows/values included per violation (keeps agent context compact)
         #[arg(long, default_value_t = 3)]
         max_samples: usize,
+
+        /// Write valid rows passing all row-level contract rules to this JSONL file
+        #[arg(long)]
+        clean: Option<PathBuf>,
+
+        /// Write rejected rows (annotated with exact DK_* error codes) to this JSONL file
+        #[arg(long)]
+        quarantine: Option<PathBuf>,
+
+        /// Allow exit 0 when row-level quarantine rate is <= RATE (0.0 - 1.0) and no table/schema errors occur
+        #[arg(long)]
+        max_quarantine_rate: Option<f64>,
     },
 
     /// Detect schema drift, breaking type shifts, null-rate spikes, and row-count drops (files, contracts, or live Postgres tables)

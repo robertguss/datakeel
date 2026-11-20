@@ -32,6 +32,22 @@ pub fn print_check_report(report: &CheckReport, color: bool) -> Result<()> {
         );
     }
 
+    if let Some(ref q) = report.quarantine {
+        let mut parts = vec![format!(
+            "{} clean, {} quarantined ({:.1}%)",
+            q.clean_rows,
+            q.quarantined_rows,
+            q.quarantine_rate * 100.0
+        )];
+        if let Some(ref cp) = q.clean_path {
+            parts.push(format!("clean -> {cp}"));
+        }
+        if let Some(ref qp) = q.quarantine_path {
+            parts.push(format!("quarantine -> {qp}"));
+        }
+        println!("  split: {}", parts.join(" | "));
+    }
+
     for v in &report.violations {
         let sev = match v.severity {
             Severity::Error => {

@@ -34,6 +34,7 @@ description: Validate, infer, diff, and generate Postgres DDL / Pydantic v2 mode
 | Validate data against a contract | `datakeel check contracts/table.yaml extract.jsonl --format agent` |
 | Validate a live Postgres table slice | `datakeel check contracts/table.yaml pg://staging.populi_students --where "status = 'active'" --format agent` |
 | Validate local extract vs live Postgres FK | `datakeel check contracts/enrollments.toml enrollments.jsonl --ref populi_students=pg://staging.populi_students --format agent` |
+| Split clean & quarantined rows with budget | `datakeel check contracts/enrollments.toml enrollments.jsonl --clean good.jsonl --quarantine bad.jsonl --max-quarantine-rate 0.05 --format agent` |
 | Detect drift vs live Postgres before load | `datakeel diff pg://staging.populi_students today_populi.jsonl --format agent` |
 | Generate Postgres DDL from contract | `datakeel codegen contracts/table.yaml --target postgres --schema staging` |
 | Generate Python Pydantic v2 model | `datakeel codegen contracts/table.yaml --target pydantic` |

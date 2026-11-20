@@ -13,6 +13,8 @@ struct AgentCheckEnvelope<'a> {
     summary: String,
     rows_checked: usize,
     columns_checked: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quarantine: Option<&'a crate::engine::check::QuarantineSummary>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     violations: &'a Vec<crate::engine::check::Violation>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -49,10 +51,22 @@ struct AgentLintEnvelope<'a> {
 
 pub fn print_check_report(report: &CheckReport) -> Result<()> {
     let summary = if report.passed {
-        format!(
-            "PASS: '{}' validated {} rows across {} columns with 0 errors.",
-            report.contract_name, report.rows_checked, report.columns_checked
-        )
+        if let Some(ref q) = report.quarantine
+            && q.quarantined_rows > 0
+        {
+            format!(
+                "PASS (WITH QUARANTINE): '{}' accepted {} clean rows and quarantined {} rows ({:.1}% within budget).",
+                report.contract_name,
+                q.clean_rows,
+                q.quarantined_rows,
+                q.quarantine_rate * 100.0
+            )
+        } else {
+            format!(
+                "PASS: '{}' validated {} rows across {} columns with 0 errors.",
+                report.contract_name, report.rows_checked, report.columns_checked
+            )
+        }
     } else {
         format!(
             "FAIL: '{}' found {} violation(s) ({} failing cells) in {} rows.",
@@ -79,6 +93,7 @@ pub fn print_check_report(report: &CheckReport) -> Result<()> {
         summary,
         rows_checked: report.rows_checked,
         columns_checked: report.columns_checked,
+        quarantine: report.quarantine.as_ref(),
         violations: &report.violations,
         next_actions,
     };

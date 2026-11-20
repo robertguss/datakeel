@@ -1,9 +1,12 @@
 use crate::contract::{Contract, LogicalType};
-use crate::data::{Dataset, Value};
+use crate::data::{Dataset, Row, Value};
 use crate::error::{KeelError, Result};
 use regex::Regex;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
+use std::fs::{self, File};
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct CheckOptions {
@@ -11,6 +14,9 @@ pub struct CheckOptions {
     pub max_samples: usize,
     pub contract_path: String,
     pub data_path: String,
+    pub clean_path: Option<PathBuf>,
+    pub quarantine_path: Option<PathBuf>,
+    pub max_quarantine_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -43,6 +49,34 @@ pub struct Violation {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct RowError {
+    pub code: &'static str,
+    pub column: String,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct QuarantinedRecord<'a> {
+    row: usize,
+    errors: &'a [RowError],
+    record: &'a Row,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct QuarantineSummary {
+    pub clean_rows: usize,
+    pub quarantined_rows: usize,
+    pub quarantine_rate: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_quarantine_rate: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clean_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quarantine_path: Option<String>,
+    pub within_budget: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct CheckReport {
     pub schema_version: &'static str,
     pub command: &'static str,
@@ -54,6 +88,8 @@ pub struct CheckReport {
     pub columns_checked: usize,
     pub violation_count: usize,
     pub total_failing_cells: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quarantine: Option<QuarantineSummary>,
     pub violations: Vec<Violation>,
 }
 
@@ -63,14 +99,32 @@ pub fn check_dataset(
     options: &CheckOptions,
     ref_datasets: &HashMap<String, Dataset>,
 ) -> Result<CheckReport> {
+    if let Some(rate) = options.max_quarantine_rate
+        && !(0.0..=1.0).contains(&rate)
+    {
+        return Err(KeelError::General(format!(
+            "`--max-quarantine-rate` must be between 0.0 and 1.0, got {rate}"
+        )));
+    }
+
     let mut violations: Vec<Violation> = Vec::new();
+    let mut has_fatal_table_error = false;
     let row_count = dataset.row_count();
     let strict = options.strict_override || contract.strict;
+    let track_rows = options.clean_path.is_some()
+        || options.quarantine_path.is_some()
+        || options.max_quarantine_rate.is_some();
+    let mut row_errors: Vec<Vec<RowError>> = if track_rows {
+        vec![Vec::new(); row_count]
+    } else {
+        Vec::new()
+    };
 
     // 1. Table row-count bounds
     if let Some(min_rows) = contract.min_rows
         && row_count < min_rows
     {
+        has_fatal_table_error = true;
         violations.push(Violation {
             code: "DK_ROW_COUNT_LOW",
             severity: Severity::Error,
@@ -87,6 +141,7 @@ pub fn check_dataset(
     if let Some(max_rows) = contract.max_rows
         && row_count > max_rows
     {
+        has_fatal_table_error = true;
         violations.push(Violation {
             code: "DK_ROW_COUNT_HIGH",
             severity: Severity::Error,
@@ -110,6 +165,7 @@ pub fn check_dataset(
             .cloned()
             .collect();
         if !extra.is_empty() {
+            has_fatal_table_error = true;
             let samples = extra
                 .iter()
                 .take(options.max_samples)
@@ -143,6 +199,7 @@ pub fn check_dataset(
         let col_present = dataset.columns.contains(col_name);
         if !col_present {
             if col_spec.required {
+                has_fatal_table_error = true;
                 violations.push(Violation {
                     code: "DK_MISSING_COLUMN",
                     severity: Severity::Error,
@@ -256,6 +313,13 @@ pub fn check_dataset(
                         value: "null".to_string(),
                     });
                 }
+                if track_rows && col_spec.required {
+                    row_errors[idx].push(RowError {
+                        code: "DK_NULL_VIOLATION",
+                        column: col_name.clone(),
+                        message: format!("Required column '{col_name}' is null."),
+                    });
+                }
                 continue;
             }
 
@@ -268,6 +332,16 @@ pub fn check_dataset(
                     type_samples.push(SampleFailure {
                         row: Some(row_num),
                         value: format!("{val} ({actual_type})"),
+                    });
+                }
+                if track_rows {
+                    row_errors[idx].push(RowError {
+                        code: "DK_TYPE_MISMATCH",
+                        column: col_name.clone(),
+                        message: format!(
+                            "Expected '{}', got '{actual_type}' ({val}).",
+                            col_spec.logical_type
+                        ),
                     });
                 }
                 continue;
@@ -287,6 +361,16 @@ pub fn check_dataset(
                             value: val.to_string(),
                         });
                     }
+                    if track_rows {
+                        row_errors[idx].push(RowError {
+                            code: "DK_RANGE_VIOLATION",
+                            column: col_name.clone(),
+                            message: format!(
+                                "Value {val} outside allowed range (min={:?}, max={:?}).",
+                                col_spec.min, col_spec.max
+                            ),
+                        });
+                    }
                 }
             }
 
@@ -303,6 +387,16 @@ pub fn check_dataset(
                             value: format!("{s:?} (len={char_len})"),
                         });
                     }
+                    if track_rows {
+                        row_errors[idx].push(RowError {
+                            code: "DK_LENGTH_VIOLATION",
+                            column: col_name.clone(),
+                            message: format!(
+                                "String length {char_len} outside bounds (min={:?}, max={:?}).",
+                                col_spec.min_length, col_spec.max_length
+                            ),
+                        });
+                    }
                 }
 
                 if let Some(ref re) = compiled_regex
@@ -313,6 +407,16 @@ pub fn check_dataset(
                         pattern_samples.push(SampleFailure {
                             row: Some(row_num),
                             value: s.to_string(),
+                        });
+                    }
+                    if track_rows {
+                        row_errors[idx].push(RowError {
+                            code: "DK_PATTERN_MISMATCH",
+                            column: col_name.clone(),
+                            message: format!(
+                                "Value '{s}' does not match pattern `{}`.",
+                                col_spec.pattern.as_deref().unwrap_or("")
+                            ),
                         });
                     }
                 }
@@ -327,6 +431,13 @@ pub fn check_dataset(
                             value: s.to_string(),
                         });
                     }
+                    if track_rows {
+                        row_errors[idx].push(RowError {
+                            code: "DK_ENUM_VIOLATION",
+                            column: col_name.clone(),
+                            message: format!("Value '{s}' is not in allowed enum."),
+                        });
+                    }
                 }
             }
 
@@ -339,7 +450,14 @@ pub fn check_dataset(
                 if dup_samples.len() < options.max_samples {
                     dup_samples.push(SampleFailure {
                         row: Some(row_num),
-                        value: key,
+                        value: key.clone(),
+                    });
+                }
+                if track_rows {
+                    row_errors[idx].push(RowError {
+                        code: "DK_DUPLICATE_KEY",
+                        column: col_name.clone(),
+                        message: format!("Duplicate value '{key}' on unique column '{col_name}'."),
                     });
                 }
             }
@@ -353,7 +471,15 @@ pub fn check_dataset(
                 if orphan_samples.len() < options.max_samples {
                     orphan_samples.push(SampleFailure {
                         row: Some(row_num),
-                        value: key,
+                        value: key.clone(),
+                    });
+                }
+                if track_rows {
+                    let fk = col_spec.references.as_deref().unwrap_or("");
+                    row_errors[idx].push(RowError {
+                        code: "DK_ORPHAN_REFERENCE",
+                        column: col_name.clone(),
+                        message: format!("Foreign key '{key}' not found in '{fk}'."),
                     });
                 }
             }
@@ -380,6 +506,7 @@ pub fn check_dataset(
         {
             let actual_rate = null_count as f64 / row_count as f64;
             if actual_rate > max_rate {
+                has_fatal_table_error = true;
                 violations.push(Violation {
                     code: "DK_NULL_RATE_EXCEEDED",
                     severity: Severity::Error,
@@ -532,6 +659,110 @@ pub fn check_dataset(
         }
     }
 
+    // 4. Write clean & quarantined row splits if requested
+    let quarantine_summary = if track_rows {
+        let mut clean_writer = match options.clean_path {
+            Some(ref p) => Some((p.clone(), create_buf_writer(p)?)),
+            None => None,
+        };
+        let mut quarantine_writer = match options.quarantine_path {
+            Some(ref p) => Some((p.clone(), create_buf_writer(p)?)),
+            None => None,
+        };
+
+        let mut clean_rows = 0usize;
+        let mut quarantined_rows = 0usize;
+
+        for (idx, row) in dataset.rows.iter().enumerate() {
+            let errs = &row_errors[idx];
+            if errs.is_empty() {
+                clean_rows += 1;
+                if let Some((ref path, ref mut w)) = clean_writer {
+                    serde_json::to_writer(&mut *w, row).map_err(|e| {
+                        KeelError::General(format!("JSON encode error: {e}"))
+                    })?;
+                    w.write_all(b"\n").map_err(|source| KeelError::IoWrite {
+                        path: path.clone(),
+                        source,
+                    })?;
+                }
+            } else {
+                quarantined_rows += 1;
+                if let Some((ref path, ref mut w)) = quarantine_writer {
+                    let wrapped = QuarantinedRecord {
+                        row: idx + 1,
+                        errors: errs,
+                        record: row,
+                    };
+                    serde_json::to_writer(&mut *w, &wrapped).map_err(|e| {
+                        KeelError::General(format!("JSON encode error: {e}"))
+                    })?;
+                    w.write_all(b"\n").map_err(|source| KeelError::IoWrite {
+                        path: path.clone(),
+                        source,
+                    })?;
+                }
+            }
+        }
+
+        if let Some((path, mut w)) = clean_writer {
+            w.flush()
+                .map_err(|source| KeelError::IoWrite { path, source })?;
+        }
+        if let Some((path, mut w)) = quarantine_writer {
+            w.flush()
+                .map_err(|source| KeelError::IoWrite { path, source })?;
+        }
+
+        let quarantine_rate = if row_count == 0 {
+            0.0
+        } else {
+            quarantined_rows as f64 / row_count as f64
+        };
+
+        let within_budget = match options.max_quarantine_rate {
+            Some(limit) => !has_fatal_table_error && quarantine_rate <= limit,
+            None => quarantined_rows == 0 && !has_fatal_table_error,
+        };
+
+        if let Some(limit) = options.max_quarantine_rate
+            && quarantine_rate > limit
+        {
+            violations.push(Violation {
+                code: "DK_QUARANTINE_RATE_EXCEEDED",
+                severity: Severity::Error,
+                column: None,
+                count: quarantined_rows,
+                message: format!(
+                    "Quarantined {:.1}% of rows ({quarantined_rows}/{row_count}), exceeding `--max-quarantine-rate` budget of {:.1}%.",
+                    quarantine_rate * 100.0,
+                    limit * 100.0
+                ),
+                samples: vec![],
+                fix_hint: "Inspect the quarantine JSONL file for systemic upstream ETL issues before loading.".to_string(),
+                fix_command: None,
+            });
+        }
+
+        Some(QuarantineSummary {
+            clean_rows,
+            quarantined_rows,
+            quarantine_rate,
+            max_quarantine_rate: options.max_quarantine_rate,
+            clean_path: options
+                .clean_path
+                .as_ref()
+                .map(|p| p.display().to_string()),
+            quarantine_path: options
+                .quarantine_path
+                .as_ref()
+                .map(|p| p.display().to_string()),
+            within_budget,
+        })
+    } else {
+        None
+    };
+
     let error_count = violations
         .iter()
         .filter(|v| v.severity == Severity::Error)
@@ -542,10 +773,18 @@ pub fn check_dataset(
         .map(|v| v.count)
         .sum();
 
+    let passed = if options.max_quarantine_rate.is_some() {
+        quarantine_summary
+            .as_ref()
+            .is_some_and(|q| q.within_budget)
+    } else {
+        error_count == 0
+    };
+
     Ok(CheckReport {
         schema_version: "1.0",
         command: "check",
-        passed: error_count == 0,
+        passed,
         contract_name: contract.name.clone(),
         contract_path: options.contract_path.clone(),
         data_path: options.data_path.clone(),
@@ -553,6 +792,23 @@ pub fn check_dataset(
         columns_checked: contract.columns.len(),
         violation_count: violations.len(),
         total_failing_cells,
+        quarantine: quarantine_summary,
         violations,
     })
+}
+
+fn create_buf_writer(path: &Path) -> Result<BufWriter<File>> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|source| KeelError::IoWrite {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    }
+    let file = File::create(path).map_err(|source| KeelError::IoWrite {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(BufWriter::new(file))
 }
